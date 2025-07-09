@@ -1,5 +1,5 @@
 # loxMqttRelay Viewer
 
-![example](\\DiskStation\docker\loxmqttrelayviewer\foto.png)
+![example](foto.png)
 
 
