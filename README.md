@@ -1,6 +1,6 @@
 # loxMqttRelay Viewer Beta
 
-![example](\\DiskStation\docker\loxmqttrelayviewer\foto.png)
+![example](foto.png)
 
 ### Docker Compose example
 
