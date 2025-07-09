@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8" />
+  <title>loxMqttRelay Viewer</title>
+  <script src="./static/vue.global.prod.js"></script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700&display=swap');
+
+    body {
+      background: #f3f4f6;
+      color: #333;
+      font-family: 'Inter', 'Roboto', sans-serif;
+      max-width: 700px;
+      margin: 0 auto;
+      padding: 1rem;
+    }
+
+    h1 {
+      font-size: 2rem;
+      text-align: center;
+      margin: 0 0 1rem 0;
+      font-weight: 700;
+    }
+
+    .status {
+      border: 1px solid;
+      padding: 1rem;
+      margin-bottom: 1rem;
+      border-radius: 5px;
+    }
+
+    .status.disconnected {
+      background: #fee2e2;
+      border-color: #f87171;
+      color: #991b1b;
+    }
+
+    .inputs {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+      width: 100%;
+    }
+
+    .input-field {
+      width: 100%;
+      padding: 0.85rem;
+      border: 1px solid #ccc;
+      border-radius: 5px;
+      font-size: 1.2rem;
+      font-family: 'Inter', 'Roboto', sans-serif;
+      box-sizing: border-box;
+    }
+
+    label {
+      display: flex;
+      align-items: center;
+      margin: 1rem 0;
+    }
+
+    input[type="checkbox"] {
+      margin-right: 0.5rem;
+    }
+
+    ul {
+      list-style: none;
+      padding: 0;
+      width: 100%;
+      margin: 0;
+    }
+
+    li {
+      background: #fff;
+      border-radius: 5px;
+      padding: 0.5rem 1rem;
+      margin-bottom: 0.25rem;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.1);
+      transition: background 15s ease;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    li.highlighted {
+      background: #bbf7d0;
+    }
+
+    .msg-left {
+      display: flex;
+      align-items: center;
+      flex: 1;
+      min-width: 0;
+      word-break: break-word;
+      overflow-wrap: anywhere;
+    }
+
+    .copy-btn {
+      margin-right: 0.5rem;
+      cursor: pointer;
+      border: 1px solid #ccc;
+      padding: 0.25rem 0.5rem;
+      border-radius: 4px;
+      background: transparent;
+      flex-shrink: 0;
+      user-select: none;
+    }
+
+    .msg-content {
+      flex: 1 1 auto;
+      word-break: break-word;
+      overflow-wrap: anywhere;
+    }
+
+    .msg-right {
+      margin-left: 1rem;
+      white-space: nowrap;
+      font-size: 0.85rem;
+      color: #555;
+      flex-shrink: 0;
+      user-select: none;
+    }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <h1>🚀 loxMqttRelay Viewer</h1>
+
+    <div v-if="!connected" class="status disconnected">
+      <p><strong>MQTT Status:</strong> Nicht verbunden</p>
+    </div>
+
+    <div class="inputs">
+      <input
+        type="text"
+        class="input-field"
+        v-model="topic"
+        @input="validateAndSend"
+        placeholder="Topic eingeben (z.B. sensor/#)"
+        :style="{ borderColor: validTopic ? '#ccc' : '#f87171', background: validTopic ? '#fff' : '#fee2e2' }"
+      />
+      <input
+        type="text"
+        class="input-field"
+        v-model="filterText"
+        placeholder="Suchfilter (Regex)..."
+      />
+    </div>
+
+    <label>
+      <input type="checkbox" v-model="sortByDate" />
+      <span>Sortiere nach Datum (ansonsten Alphabet)</span>
+    </label>
+
+    <ul>
+      <li
+        v-for="msg in filteredAndSortedMessages"
+        :key="msg.topic"
+        :class="{ highlighted: isHighlighted(msg.highlightUntil) }"
+      >
+        <div class="msg-left">
+          <button class="copy-btn" @click="copyToClipboard(msg.topic)">📋</button>
+          <div class="msg-content">
+            <strong>{{ msg.topic }}</strong>: {{ msg.value }}
+          </div>
+        </div>
+        <div class="msg-right">
+          {{ formatTime(msg.timestamp) }} | {{ timeAgo(msg.timestamp) }}
+        </div>
+      </li>
+    </ul>
+  </div>
+
+  <script>
+    const { createApp, ref, computed, onMounted } = Vue;
+
+    createApp({
+      setup() {
+        const topic = ref("#");
+        const validTopic = ref(true);
+        const connected = ref(false);
+        const filterText = ref("");
+        const sortByDate = ref(true);
+        const messagesMap = ref({});
+        const HIGHLIGHT_DURATION = 15000;
+        let ws = null;
+        const now = ref(Date.now());
+        const copiedTopic = ref("");
+
+        const connect = () => {
+          ws = new WebSocket("ws://" + window.location.host + "/ws");
+          ws.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+            if (data.type === "status") {
+              connected.value = data.connected;
+              messagesMap.value = {};
+            } else if (data.type === "message") {
+              const nowMs = Date.now();
+              messagesMap.value[data.topic] = {
+                topic: data.topic,
+                value: data.value,
+                timestamp: nowMs,
+                highlightUntil: nowMs + HIGHLIGHT_DURATION,
+              };
+            }
+          };
+          ws.onopen = () => console.log("WebSocket verbunden");
+          ws.onclose = () => connected.value = false;
+          ws.onerror = () => connected.value = false;
+        };
+
+        const isValidTopic = (t) => {
+          if (!t) return false;
+          if (t.includes(" ")) return false;
+          if (t.includes("#")) {
+            if (!t.endsWith("#")) return false;
+            if (t.indexOf("#") !== t.length - 1) return false;
+          }
+          return !t.split("/").some(lvl => lvl.includes("+") && lvl !== "+");
+        };
+
+        const validateAndSend = () => {
+          validTopic.value = isValidTopic(topic.value);
+          if (validTopic.value && ws && ws.readyState === WebSocket.OPEN) {
+            messagesMap.value = {};
+            ws.send(topic.value);
+          }
+        };
+
+        const filteredAndSortedMessages = computed(() => {
+          let arr = Object.values(messagesMap.value);
+          if (filterText.value.trim()) {
+            try {
+              const regex = new RegExp(filterText.value, "i");
+              arr = arr.filter(m => regex.test(m.topic) || regex.test(m.value));
+            } catch {}
+          }
+          return sortByDate.value
+            ? arr.slice().sort((a, b) => b.timestamp - a.timestamp)
+            : arr.slice().sort((a, b) => a.topic.localeCompare(b.topic));
+        });
+
+        const isHighlighted = (until) => until > Date.now();
+        const formatTime = (ts) => new Date(ts).toLocaleTimeString("de-DE", {hour12:false});
+
+        const timeAgo = (ts) => {
+          const seconds = Math.floor((now.value - ts) / 1000);
+          const secNonNegative = seconds < 0 ? 0 : seconds;
+          if (secNonNegative < 60) return `${secNonNegative} Sek.`;
+          const minutes = Math.floor(secNonNegative / 60);
+          return `${minutes} Min.`;
+        };
+
+        const fallbackCopy = (text) => {
+          const textarea = document.createElement("textarea");
+          textarea.value = text;
+          textarea.style.position = "fixed";
+          textarea.style.left = "-9999px";
+          document.body.appendChild(textarea);
+          textarea.focus();
+          textarea.select();
+          try {
+            document.execCommand("copy");
+            copiedTopic.value = text;
+            setTimeout(() => copiedTopic.value = "", 1500);
+          } catch (err) {
+            alert("Kopieren fehlgeschlagen: " + err);
+          }
+          document.body.removeChild(textarea);
+        };
+
+        const copyToClipboard = (text) => {
+          if (navigator.clipboard && window.isSecureContext) {
+            navigator.clipboard.writeText(text)
+              .then(() => {
+                copiedTopic.value = text;
+                setTimeout(() => copiedTopic.value = "", 1500);
+              })
+              .catch(err => fallbackCopy(text));
+          } else {
+            fallbackCopy(text);
+          }
+        };
+
+        onMounted(() => {
+          connect();
+
+          const updateNow = () => {
+            now.value = Date.now();
+            const delay = 1000 - (now.value % 1000);
+            setTimeout(updateNow, delay);
+          };
+
+          updateNow();
+        });
+
+        return {
+          topic, validTopic, connected, filterText, sortByDate,
+          validateAndSend, filteredAndSortedMessages,
+          isHighlighted, formatTime, timeAgo, copyToClipboard,
+          now, copiedTopic
+        };
+      },
+    }).mount("#app");
+  </script>
+</body>
+</html>
